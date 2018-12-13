@@ -52,23 +52,24 @@ class AircraftPerf(Model):
         fd = dirname(abspath(__file__)) + sep + "dai1336a.csv"
 
         self.wing = static.wing.flight_model(static.wing, state, fitdata=fd)
-        #self.htail = static.htail.flight_model(static.htail, state)
-        #self.vtail = static.vtail.flight_model(static.vtail, state)
+        self.htail = static.htail.flight_model(static.htail, state)
+        self.vtail = static.vtail.flight_model(static.vtail, state)
         self.thrust_prop = static.thrust_prop.flight_model(static.thrust_prop, state)
         self.lift_prop = static.lift_prop.flight_model(static.lift_prop, state)
         self.thrust_motor = static.thrust_motor.flight_model(static.thrust_motor, state)
         self.lift_motor = static.lift_motor.flight_model(static.lift_motor, state)
-        self.flight_models = [self.wing, #self.htail, self.vtail, 
+        self.boom = static.boom.flight_model(static.boom, state)
+        self.flight_models = [self.wing, self.htail, self.vtail,self.boom, 
                                 self.thrust_prop, self.lift_prop,
                                 self.thrust_motor, self.lift_motor
                                 ]
 
         e = self.e = self.wing.e
-        #cdht = self.cdht = self.htail.Cd
-        #cdvt = self.cdvt = self.vtail.Cd
-        #Sh = self.Sh = static.Sh
-        #Sv = self.Sv = static.Sv
-        Sw = self.Sw = static.Sw
+        cdht = self.cdht = self.htail.Cd
+        cdvt = self.cdvt = self.vtail.Cd
+        Sh = self.Sh = static.htail.planform.S
+        Sv = self.Sv = static.vtail.planform.S
+        Sw = self.Sw = static.wing.planform.S
         cdw = self.cdw = self.wing.Cd
         CL = self.CL = self.wing.CL
 
@@ -86,15 +87,18 @@ class AircraftPerf(Model):
 
         self.wing.substitutions[e] = 0.85
         self.wing.substitutions[self.wing.CLstall] = 1.4
-        #dvars = [cdht*Sh/Sw, cdvt*Sv/Sw]
-        dvars = [.04]
-        #self.fuse = static.fuselage.flight_model(static.fuselage,
-        #                                                 state)
-        #self.flight_models.extend([self.fuse])
-        #cdfuse = self.fuse.Cd
-        #Sfuse = static.fuselage.Sw
-        #dvars.extend([cdfuse*Sfuse/Sw])
-        #self.fuse.substitutions[self.fuse.mfac] = 1.1
+        dvars = [cdht*Sh/Sw, cdvt*Sv/Sw]
+        self.fuse = static.fuselage.flight_model(static.fuselage,
+                                                         state)
+        self.flight_models.extend([self.fuse])
+        cdfuse = self.fuse.Cd
+        Sfuse = static.fuselage.S
+        dvars.extend([cdfuse*Sfuse/Sw])
+        self.fuse.substitutions[self.fuse.mfac] = 1.1
+        
+        cdboom = self.boom.Cd
+        Sboom = static.boom.S
+        dvars.extend([cdboom*Sboom/Sw*static.N_booms])
         Wzf = static.Wzf
         rho = state.rho
         V = state.V
@@ -117,6 +121,8 @@ class AircraftPerf(Model):
                        RPMprop_thrust == RPMmotor_thrust,
                        Qprop_lift == Qmotor_lift,
                        RPMprop_lift == RPMmotor_lift,
+                       #cdht >= .005,
+                       #cdvt >= .005
                       ]
 
 
@@ -133,8 +139,8 @@ class Aircraft(Model):
     Wtotal              [lbf]   aircraft weight
     Wzf                 [lbf]   zero fuel weight
     mfac        1.0      [-]     total weight margin
-    Wh                  [gf]     htail weight
-    Wv                  [gf]     vtail weight
+    Wh                  [lbf]     htail weight
+    Wv                  [lbf]     vtail weight
     bmax        40      [ft]    span constraint
     minvttau    0.09    [-]     minimum vertical tail tau ratio
     minhttau    0.06    [-]     minimum horizontal tail tau ratio
@@ -145,15 +151,20 @@ class Aircraft(Model):
     Ppay        60      [W]     payload power draw
     Poper               [W]     operating power
     T_flight            [min]     flight time
-    Estar_batt  300     [W*hr/kgf] battery specific energy
+    Estar_batt  200     [W*hr/kgf] battery specific energy
     Vstar_batt  .047    [W*hr/cm^3] battery specific volume 
     N_lift_motors       [-]     Number of dedicated lifting motors
     N_thrust_motors     [-]     Number of dedicated thrust motors
     N_tilt_motors       [-]     Number of tilting motors
+    N_booms             [-]     Number of mounting booms for motors
     W_f                 [lbf]   fuse weight
     f_h                 [-]     htail weight fraction
     f_v                 [-]     vtail weight fraction
-    f_f         .2      [-]     fuselage weight fraction     
+    f_f         .2      [-]     fuselage weight fraction   
+    R_fuse      5       [ft]     fuselage radius  
+    L_fuse      25      [ft]     fuselage length
+    R_boom      .15      [ft]    boom radius
+    N_booms             [-]     number of booms
 
     SKIP VERIFICATION
 
@@ -164,7 +175,8 @@ class Aircraft(Model):
     def setup(self):
         exec parse_variables(Aircraft.__doc__)
 
-        #self.fuselage = Fuselage()
+        self.fuselage = fuselage = Fuselage()
+        self.boom = boom = Fuselage()
 
         HorizontalTail.sparModel = BoxSparGP
         HorizontalTail.fillModel = None
@@ -208,8 +220,9 @@ class Aircraft(Model):
         
         #Volfuse = self.Volfuse = self.fuselage.Vol
         
-        #Wfuse = self.fuselage.W
+        Wfuse = self.fuselage.W
         Wwing = self.wing.W
+        Wboom = self.boom.W
         
         self.htail.substitutions[self.htail.mh] = 0.1
         self.htail.substitutions[self.htail.skin.rhoA] = 0.4
@@ -219,7 +232,8 @@ class Aircraft(Model):
         self.htail.substitutions[self.htail.planform.CLmax] = 1.5
         self.vtail.substitutions[self.vtail.planform.CLmax] = 1.5
 
-        #self.fuselage.substitutions[self.fuselage.nply] = 5
+        self.fuselage.substitutions[self.fuselage.nply] = 5
+        self.boom.substitutions[self.boom.nply] = 2
 
         self.lift_motor = Motor()
         self.thrust_motor = Motor()
@@ -241,7 +255,7 @@ class Aircraft(Model):
                             self.lift_prop, self.thrust_prop,  #self.tilt_prop
                             ]
 
-        self.components = [self.wing, #self.fuselage, 
+        self.components = [self.wing, self.fuselage, 
                             self.htail, self.vtail,
                             ]
 
@@ -250,9 +264,10 @@ class Aircraft(Model):
         #self.loading = [self.htailg, vtailg]
         constraints = [Vh <= Sh*lh/Sw/cmac,
                        Vv <= Sv*lv/Sw/b,
-                       #self.fuselage.l == l_max,
-                       lv ==  10*units('ft'),
-                       lh == 10*units('ft'),
+                       fuselage.R == R_fuse,
+                       fuselage.l == L_fuse,
+                       lv ==  L_fuse,
+                       lh == L_fuse,
                        vttau >= minvttau,
                        httau >= minhttau,
                        Wh == f_h*Wtotal,
@@ -263,6 +278,7 @@ class Aircraft(Model):
                         N_thrust_motors*W_thr_m +
                         N_lift_motors*W_l_p + 
                         N_thrust_motors*W_thr_p +
+                        N_booms*Wboom +
                         #N_tilt_motors*W_tlt_m +
                             sum([c.W for c in self.components])
                         +W_f)]),
@@ -273,13 +289,18 @@ class Aircraft(Model):
                         Wbatt == Ebatt/Estar_batt, 
 
                         bmax**2 >= N_lift_motors*self.lift_prop.R**2*pi,
-                        bmax >= N_lift_motors*self.thrust_prop.R,
+                        bmax >= N_thrust_motors*self.thrust_prop.R,
+
+                        boom.R == R_boom,
+                        #boom.l == b,
+
+                        N_booms >= N_lift_motors/(boom.l/self.lift_prop.R)
 
                         #self.lift_prop.R >= 1*units("ft"),
                         #self.N_lift_motors <= 10,
                       ]
 
-        return constraints, self.components, self.propulsors#, self.loading
+        return constraints, self.components, self.propulsors, self.boom#, self.loading
 
 
 class FlightState(Model):
@@ -396,7 +417,7 @@ class LevelFlight(Model):
     ---------
     R                       [nmi]           range
     V                       [kts]           segment speed
-    V_min           120     [kts]           minimum speed
+    V_min           100     [kts]           minimum speed
     t                       [min]           segment time
     E                       [W*hr]             segment energy
     """
@@ -423,10 +444,11 @@ class LevelFlight(Model):
             aircraft.htail, state)
         self.vtailg = aircraft.vtail.spar.loading(
             aircraft.vtail, state)
-        #self.fuseload = self.fuselage.loading(self.fuselage,Wtotal)
+        #self.fuseload = aircraft.fuselage.loading(aircraft.fuselage,Wtotal)
         
         self.loading = [self.wingg,
-                        self.htailg, self.vtailg
+                        self.htailg, self.vtailg,
+                        #self.fuseload
                         ]
 
         constraints = [state.V == V,
@@ -435,6 +457,7 @@ class LevelFlight(Model):
                         0.5*rho*V**2*perf.CL*perf.Sw == perf.W,
                         R == t * V,
                         E >= dedt*t,
+                        V >= V_min,
 
                         self.wingg.W >= aircraft.Wtotal,
                         self.htailg.W >= .5*rho*V**2*Sh*CLhmax,
@@ -453,13 +476,14 @@ class Mission(Model):
     """define mission for aircraft
     Variables
     ---------
-    R_total                              [nmi]           total range
+    R_total               60             [nmi]           total range
     INT_N_thrust_motors                  [-]             integer thrust motors      
     INT_N_lift_motors                    [-]             integer lift motors
+    INT_N_booms                          [-]             number of lift motor support booms
     """
-    def setup(self, aircraft):
+    def setup(self):
         exec parse_variables(Mission.__doc__)
-        self.aircraft = aircraft
+        self.aircraft = aircraft = Aircraft()
         self.cruise = cruise = LevelFlight(self.aircraft)
         self.hover = hover = Hover(self.aircraft)
 
@@ -472,14 +496,15 @@ class Mission(Model):
                         aircraft.Ebatt >= cruise.E + hover.E,
                         aircraft.N_thrust_motors == INT_N_thrust_motors,
                         aircraft.N_lift_motors == INT_N_lift_motors,
+                        aircraft.N_booms == INT_N_booms,
                         ]
 
+        self.cost = self.aircraft.Wtotal
         return self.mission, self.aircraft, constraints
 
 if __name__ == "__main__":
-    Vehicle = Aircraft()
-    M = Mission(Vehicle)
+    M = Mission()
+    print M
     M.substitutions[M.R_total] = 20
-    M.cost =  M.aircraft.Wtotal
-    sol = (M.solve("mosek", iteration_limit = 200, verbosity = 2))
-    
+    sol = (M.solve("mosek", iteration_limit = 200, verbosity = 0))
+    print sol.summary()
